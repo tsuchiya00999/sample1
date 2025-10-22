@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>リアルタイムナビゲーションマップ</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.css" />
+
+    <style>
+        /* ページ全体のスタイル */
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: sans-serif;
+        }
+
+        /* 地図を表示するコンテナのスタイル */
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+        
+        /* 傾き調整ボタンのスタイル */
+        #tilt-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            z-index: 1;
+        }
+
+        #tilt-controls button {
+            background-color: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            font-size: 16px;
+        }
+
+        #tilt-controls button:hover {
+            background-color: #f0f0f0;
+        }
+
+        /* ナビゲーション操作パネルのスタイル */
+        #nav-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 1;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        #search-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        #destination-input {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        #nav-panel button {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: none;
+            background-color: #4285F4;
+            color: white;
+            cursor: pointer;
+        }
+        
+        /* スライダーのコンテナと入力欄のスタイル */
+        #route-slider-container {
+            position: absolute;
+            bottom: 20px;
+            left: 10%;
+            width: 80%; /* ★★★ この設定により、どの端末でも画面幅の80%で表示されます ★★★ */
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            padding-bottom: 30px; /* スライダーの下に余白を追加 */
+            border-radius: 8px;
+            z-index: 2;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            display: none; /* 初期状態では非表示 */
+        }
+        
+        /* ★★★ noUiSlider用のスタイル（必須ではありませんが見た目を整えます） ★★★ */
+        #route-slider {
+            margin: 0 10px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+    
+    <div id="tilt-controls">
+        <button id="tilt-up-button">▲</button>
+        <button id="tilt-down-button">▼</button>
+    </div>
+
+    <div id="nav-panel">
+        <button id="toggle-search-button">検索</button>
+        <div id="search-controls" style="display: none;"> <input type="text" id="destination-input" placeholder="目的地を入力または地図をクリック">
+            <button id="start-nav-button">経路検索</button>
+            <button id="clear-route-button" style="background-color: #f44336;">クリア</button>
+        </div>
+    </div>
+
+    <div id="route-slider-container">
+        <div id="route-slider"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.js"></script>
+
+    <script>
+        let map;
+        let directionsService;
+        let directionsRenderer;
+        let currentPositionMarker;
+        let currentLatLng;
+        let geocoder;
+        let destinationMarker;
+        let destinationLatLng = null;
+
+        let routePath = [];
+        let highlightPolyline;
+        
+        // ★★★ スライダーのインスタンスを保持する変数を追加 ★★★
+        let routeSlider, sliderContainer;
+
+        function initMap() {
+            directionsService = new google.maps.DirectionsService();
+            directionsRenderer = new google.maps.DirectionsRenderer();
+            geocoder = new google.maps.Geocoder();
+            
+            const initialPosition = { lat: 35.681236, lng: 139.767125 };
+
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: initialPosition,
+                zoom: 18,
+                tilt: 60,
+                heading: 0,
+                mapId: 'e0361908272b781aef2d6849',
+                disableDefaultUI: true,
+                gestureHandling: 'greedy'
+            });
+            
+            directionsRenderer.setOptions({
+                suppressPolylines: true,
+                suppressMarkers: true,
+                map: map
+            });
+
+            map.addListener('click', handleMapClick);
+
+            currentPositionMarker = new google.maps.Marker({
+                map: map,
+                icon: {
+                    path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                    scale: 7,
+                    fillColor: '#4285F4',
+                    fillOpacity: 1,
+                    strokeWeight: 2,
+                    strokeColor: 'white',
+                    rotation: 0
+                }
+            });
+
+            startGeolocationWatcher();
+            setupTiltControls();
+            setupButtons();
+            setupSliders();
+        }
+
+        function setupButtons() {
+            const toggleButton = document.getElementById('toggle-search-button');
+            const searchControls = document.getElementById('search-controls');
+
+            toggleButton.addEventListener('click', () => {
+                const isHidden = searchControls.style.display === 'none';
+                if (isHidden) {
+                    searchControls.style.display = 'flex';
+                    toggleButton.textContent = '閉じる';
+                } else {
+                    searchControls.style.display = 'none';
+                    toggleButton.textContent = '検索';
+                }
+            });
+
+            document.getElementById('start-nav-button').addEventListener('click', () => {
+                const destinationQuery = document.getElementById('destination-input').value;
+
+                if (!currentLatLng) {
+                    alert('現在地が取得できていません。');
+                    return;
+                }
+                
+                const handleDestinationFound = (latLng, title) => {
+                    clearRoute(); 
+
+                    if (title) {
+                         document.getElementById('destination-input').value = title;
+                    }
+                    
+                    destinationMarker = new google.maps.Marker({
+                        position: latLng,
+                        map: map,
+                        title: title || "目的地"
+                    });
+                    
+                    displayRouteOnMap(currentLatLng, latLng);
+                };
+
+                if (destinationLatLng) {
+                    handleDestinationFound(destinationLatLng, document.getElementById('destination-input').value);
+                }
+                else if (destinationQuery) {
+                    geocoder.geocode({ 'address': destinationQuery }, (results, status) => {
+                        if (status === 'OK') {
+                            handleDestinationFound(results[0].geometry.location, results[0].formatted_address);
+                        } else {
+                            alert('「' + destinationQuery + '」の場所が見つかりませんでした。理由: ' + status);
+                        }
+                    });
+                } else {
+                    alert('目的地を入力またはクリックしてください。');
+                }
+            });
+
+            document.getElementById('clear-route-button').addEventListener('click', clearRoute);
+
+            document.getElementById('destination-input').addEventListener('input', () => {
+                destinationLatLng = null;
+            });
+        }
+        
+        function setupSliders() {
+            // コンテナ要素を取得するだけに変更
+            sliderContainer = document.getElementById('route-slider-container');
+        }
+
+        function handleMapClick(event) {
+            const clickedLatLng = event.latLng;
+            destinationLatLng = clickedLatLng;
+
+            if (destinationMarker) {
+                destinationMarker.setMap(null);
+            }
+            destinationMarker = new google.maps.Marker({
+                position: clickedLatLng,
+                map: map,
+                title: "目的地"
+            });
+            geocoder.geocode({ 'location': clickedLatLng }, (results, status) => {
+                if (status === 'OK' && results[0]) {
+                    document.getElementById('destination-input').value = results[0].formatted_address;
+                } else {
+                    document.getElementById('destination-input').value = `${clickedLatLng.lat()}, ${clickedLatLng.lng()}`;
+                }
+            });
+        }
+
+        let bluePolyline; 
+
+        function clearRoute() {
+            directionsRenderer.setDirections({routes: []});
+            if (destinationMarker) {
+                destinationMarker.setMap(null);
+                destinationMarker = null;
+            }
+            if (highlightPolyline) {
+                highlightPolyline.setMap(null);
+                highlightPolyline = null;
+            }
+            if (bluePolyline) {
+                bluePolyline.setMap(null);
+                bluePolyline = null;
+            }
+            document.getElementById('destination-input').value = "";
+            sliderContainer.style.display = 'none';
+            routePath = [];
+            destinationLatLng = null;
+
+            // ★★★ スライダーのインスタンスを破棄 ★★★
+            if (routeSlider) {
+                routeSlider.destroy();
+                routeSlider = null;
+            }
+        }
+        
+        function startGeolocationWatcher() {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    (position) => {
+                        const { latitude, longitude, heading } = position.coords;
+                        currentLatLng = { lat: latitude, lng: longitude };
+                        
+                        currentPositionMarker.setPosition(currentLatLng);
+
+                        if (!directionsRenderer.getDirections()?.routes.length) {
+                            map.setCenter(currentLatLng);
+
+                            if (heading !== null) {
+                                map.setHeading(heading);
+                                currentPositionMarker.setIcon({
+                                    ...currentPositionMarker.getIcon(),
+                                    rotation: heading
+                                });
+                            }
+                        }
+                    },
+                    () => { alert('位置情報の取得に失敗しました。'); },
+                    { enableHighAccuracy: true }
+                );
+            } else {
+                alert('このブラウザはGeolocationをサポートしていません。');
+            }
+        }
+
+        function setupTiltControls() {
+            const tiltUpButton = document.getElementById('tilt-up-button');
+            const tiltDownButton = document.getElementById('tilt-down-button');
+            const TILT_STEP = 15;
+            const MAX_TILT = 85;
+            const MIN_TILT = 0;
+
+            tiltUpButton.addEventListener('click', () => {
+                map.setTilt(Math.min((map.getTilt() || 0) + TILT_STEP, MAX_TILT));
+            });
+            tiltDownButton.addEventListener('click', () => {
+                map.setTilt(Math.max((map.getTilt() || 0) - TILT_STEP, MIN_TILT));
+            });
+        }
+        
+        function displayRouteOnMap(start, end) {
+            directionsService.route({
+                origin: start,
+                destination: end, 
+                travelMode: google.maps.TravelMode.DRIVING
+            }, (result, status) => {
+                if (status === 'OK') {
+                    directionsRenderer.setDirections(result);
+
+                    let detailedPath = [];
+                    const route = result.routes[0];
+                    if (route && route.legs) {
+                        route.legs.forEach(leg => {
+                            leg.steps.forEach(step => {
+                                detailedPath = detailedPath.concat(step.path);
+                            });
+                        });
+                    }
+                    routePath = detailedPath; 
+
+                    if (routePath.length > 1) {
+                        bluePolyline = new google.maps.Polyline({
+                            path: routePath,
+                            geodesic: true,
+                            strokeColor: '#4285F4',
+                            strokeOpacity: 0.8,
+                            strokeWeight: 6,
+                            zIndex: 2
+                        });
+                        bluePolyline.setMap(map);
+
+                        sliderContainer.style.display = 'block';
+                        
+                        // ★★★ ここから noUiSlider の設定 ★★★
+                        const sliderElement = document.getElementById('route-slider');
+                        
+                        // 既にスライダーが存在する場合は破棄（クリア忘れ対策）
+                        if (routeSlider) {
+                            routeSlider.destroy();
+                        }
+
+                        routeSlider = noUiSlider.create(sliderElement, {
+                            // 開始時のハンドルの位置 [左側, 右側]
+                            start: [0, routePath.length - 1],
+                            // ハンドル間の背景色を繋げる
+                            connect: true,
+                            // スライダーの可動範囲
+                            range: {
+                                'min': 0,
+                                'max': routePath.length - 1
+                            },
+                            // ハンドルが動く最小単位
+                            step: 1
+                        });
+
+                        // スライダーの値が変更されたらハイライトを更新
+                        routeSlider.on('update', (values) => {
+                            updateRouteHighlight(values);
+                        });
+
+                        // 初期表示のために一度呼び出す
+                        updateRouteHighlight([0, routePath.length - 1]);
+                        // ★★★ noUiSlider の設定ここまで ★★★
+                    }
+
+                } else {
+                    window.alert('経路検索に失敗しました。理由: ' + status);
+                }
+            });
+        }
+        
+        // ★★★ updateRouteHighlight関数を2つの値を受け取るように変更 ★★★
+        function updateRouteHighlight(values) {
+            if (routePath.length === 0) return;
+
+            // スライダーの2つの値（文字列）を整数に変換
+            const startValue = parseInt(values[0]);
+            const endValue = parseInt(values[1]);
+            
+            // 2つの値の間の経路を切り出す
+            const selectedPath = routePath.slice(startValue, endValue + 1);
+
+            if (highlightPolyline) {
+                highlightPolyline.setMap(null);
+            }
+
+            highlightPolyline = new google.maps.Polyline({
+                path: selectedPath,
+                geodesic: true,
+                strokeColor: '#FF0000', // ハイライトの色
+                strokeOpacity: 0.7,
+                strokeWeight: 8,
+                zIndex: 3
+            });
+            highlightPolyline.setMap(map);
+
+            // 選択範囲が地図に収まるように調整
+            const bounds = new google.maps.LatLngBounds();
+            selectedPath.forEach(point => bounds.extend(point));
+            
+            if (!bounds.isEmpty()) {
+                const currentTilt = map.getTilt();
+                map.fitBounds(bounds, 50); // 50pxのパディング
+                map.setTilt(currentTilt);
+            }
+        }
+
+    </script>
+    <script async
+        src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBZMrPm3iUtrr4f8Bzrw6yboDilUX3aZCM&callback=initMap&v=beta&libraries=marker,places,geometry">
+    </script>
+</body>
+</html>
