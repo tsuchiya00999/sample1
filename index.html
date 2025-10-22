@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>リアルタイムナビゲーションマップ</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.css" />
+
     <style>
         /* ページ全体のスタイル */
         html, body {
@@ -58,10 +61,8 @@
             align-items: center;
         }
         
-        /* ★★★ 追加したスタイル ★★★ */
-        /* 検索コントロールをまとめるコンテナのスタイル */
         #search-controls {
-            display: flex; /* JSで 'none' と切り替える */
+            display: flex;
             gap: 10px;
             align-items: center;
         }
@@ -86,21 +87,19 @@
             position: absolute;
             bottom: 20px;
             left: 10%;
-            width: 80%;
+            width: 80%; /* ★★★ この設定により、どの端末でも画面幅の80%で表示されます ★★★ */
             background: rgba(255, 255, 255, 0.9);
             padding: 15px;
+            padding-bottom: 30px; /* スライダーの下に余白を追加 */
             border-radius: 8px;
             z-index: 2;
             box-shadow: 0 2px 10px rgba(0,0,0,0.2);
             display: none; /* 初期状態では非表示 */
         }
-        #route-slider-container div {
-            display: flex;
-            align-items: center;
-        }
-
-        #route-slider-container input[type="range"] {
-            width: 100%;
+        
+        /* ★★★ noUiSlider用のスタイル（必須ではありませんが見た目を整えます） ★★★ */
+        #route-slider {
+            margin: 0 10px;
         }
 
     </style>
@@ -123,11 +122,10 @@
     </div>
 
     <div id="route-slider-container">
-        <div>
-            <input type="range" id="progress-slider" min="0" max="100" value="100">
-        </div>
+        <div id="route-slider"></div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.js"></script>
 
     <script>
         let map;
@@ -141,7 +139,9 @@
 
         let routePath = [];
         let highlightPolyline;
-        let progressSlider, sliderContainer;
+        
+        // ★★★ スライダーのインスタンスを保持する変数を追加 ★★★
+        let routeSlider, sliderContainer;
 
         function initMap() {
             directionsService = new google.maps.DirectionsService();
@@ -155,7 +155,7 @@
                 zoom: 18,
                 tilt: 60,
                 heading: 0,
-                mapId: 'e0361908272b781aef2d6849', // ご自身のMap IDを設定してください
+                mapId: 'e0361908272b781aef2d6849',
                 disableDefaultUI: true,
                 gestureHandling: 'greedy'
             });
@@ -188,21 +188,19 @@
         }
 
         function setupButtons() {
-            // ★★★ ここからが追加・変更箇所です ★★★
             const toggleButton = document.getElementById('toggle-search-button');
             const searchControls = document.getElementById('search-controls');
 
             toggleButton.addEventListener('click', () => {
                 const isHidden = searchControls.style.display === 'none';
                 if (isHidden) {
-                    searchControls.style.display = 'flex'; // 表示するときはflex
+                    searchControls.style.display = 'flex';
                     toggleButton.textContent = '閉じる';
                 } else {
-                    searchControls.style.display = 'none'; // 非表示にする
+                    searchControls.style.display = 'none';
                     toggleButton.textContent = '検索';
                 }
             });
-            // ★★★ 追加・変更ここまで ★★★
 
             document.getElementById('start-nav-button').addEventListener('click', () => {
                 const destinationQuery = document.getElementById('destination-input').value;
@@ -252,9 +250,8 @@
         }
         
         function setupSliders() {
+            // コンテナ要素を取得するだけに変更
             sliderContainer = document.getElementById('route-slider-container');
-            progressSlider = document.getElementById('progress-slider');
-            progressSlider.addEventListener('input', updateRouteHighlight);
         }
 
         function handleMapClick(event) {
@@ -298,6 +295,12 @@
             sliderContainer.style.display = 'none';
             routePath = [];
             destinationLatLng = null;
+
+            // ★★★ スライダーのインスタンスを破棄 ★★★
+            if (routeSlider) {
+                routeSlider.destroy();
+                routeSlider = null;
+            }
         }
         
         function startGeolocationWatcher() {
@@ -376,9 +379,37 @@
                         bluePolyline.setMap(map);
 
                         sliderContainer.style.display = 'block';
-                        progressSlider.max = routePath.length - 1;
-                        progressSlider.value = 0;
-                        updateRouteHighlight();
+                        
+                        // ★★★ ここから noUiSlider の設定 ★★★
+                        const sliderElement = document.getElementById('route-slider');
+                        
+                        // 既にスライダーが存在する場合は破棄（クリア忘れ対策）
+                        if (routeSlider) {
+                            routeSlider.destroy();
+                        }
+
+                        routeSlider = noUiSlider.create(sliderElement, {
+                            // 開始時のハンドルの位置 [左側, 右側]
+                            start: [0, routePath.length - 1],
+                            // ハンドル間の背景色を繋げる
+                            connect: true,
+                            // スライダーの可動範囲
+                            range: {
+                                'min': 0,
+                                'max': routePath.length - 1
+                            },
+                            // ハンドルが動く最小単位
+                            step: 1
+                        });
+
+                        // スライダーの値が変更されたらハイライトを更新
+                        routeSlider.on('update', (values) => {
+                            updateRouteHighlight(values);
+                        });
+
+                        // 初期表示のために一度呼び出す
+                        updateRouteHighlight([0, routePath.length - 1]);
+                        // ★★★ noUiSlider の設定ここまで ★★★
                     }
 
                 } else {
@@ -387,12 +418,15 @@
             });
         }
         
-        function updateRouteHighlight() {
+        // ★★★ updateRouteHighlight関数を2つの値を受け取るように変更 ★★★
+        function updateRouteHighlight(values) {
             if (routePath.length === 0) return;
 
-            const startValue = 0;
-            const endValue = parseInt(progressSlider.value);
+            // スライダーの2つの値（文字列）を整数に変換
+            const startValue = parseInt(values[0]);
+            const endValue = parseInt(values[1]);
             
+            // 2つの値の間の経路を切り出す
             const selectedPath = routePath.slice(startValue, endValue + 1);
 
             if (highlightPolyline) {
@@ -402,22 +436,20 @@
             highlightPolyline = new google.maps.Polyline({
                 path: selectedPath,
                 geodesic: true,
-                strokeColor: '#FF0000',
+                strokeColor: '#FF0000', // ハイライトの色
                 strokeOpacity: 0.7,
                 strokeWeight: 8,
                 zIndex: 3
             });
             highlightPolyline.setMap(map);
 
+            // 選択範囲が地図に収まるように調整
             const bounds = new google.maps.LatLngBounds();
-            if (currentLatLng) {
-                bounds.extend(new google.maps.LatLng(currentLatLng.lat, currentLatLng.lng));
-            }
             selectedPath.forEach(point => bounds.extend(point));
             
             if (!bounds.isEmpty()) {
                 const currentTilt = map.getTilt();
-                map.fitBounds(bounds, 50);
+                map.fitBounds(bounds, 50); // 50pxのパディング
                 map.setTilt(currentTilt);
             }
         }
